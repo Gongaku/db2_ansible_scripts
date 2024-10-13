@@ -1,0 +1,67 @@
+---
+  - name: Check for DB2 on system
+    import_playbook: "{{ playbook_dir }}/db2_get_databases.yml"
+
+  - name: DB2 Permission List
+    hosts: [db2]
+    become: true
+    gather_facts: false
+    strategy: linear
+    vars:
+      database: ["{{ DATABASE }}"]
+      type: "{{ TYPE | default('User and Groups') }}"
+
+    tasks: 
+      - name: End Play if database is not in list of DB2 databases
+        meta: end_play
+        when: 
+          - database is undefined or ansible_play_hosts_all | map('extract', hostvars, 'local_dbs') | flatten | intersect(database) | length != 1
+
+      - block:
+          - name: Get Permissions
+            shell: |
+              db2_path=~/sqllib
+              source $db2_path/db2profile
+
+              {% if type.lower == "user" %}
+              where="WHERE authidtype = 'U'"
+              {% elif type.lower == "group" %}
+              where="WHERE authidtype = 'G'"
+              {% else %}
+              where="WHERE authidtype in ('G', 'U')"
+              {% endif %}
+
+              query="SELECT \
+                CAST(a.AUTHID as varchar(20)) AS name, \
+                cast(a.AUTHIDTYPE as char(1)) as type, \
+                CASE d.BINDADDAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS bindadd, \
+                CASE d.CONNECTAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS connect, \
+                CASE d.CREATETABAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS create_tab, \
+                CASE d.DBADMAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS dbadm, \
+                CASE d.EXTERNALROUTINEAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS ex_routine, \
+                CASE d.IMPLSCHEMAAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS implschema, \
+                CASE d.LOADAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS load, \
+                CASE d.NOFENCEAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS nofence, \
+                CASE d.QUIESCECONNECTAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS quiesceconn, \
+                CASE d.SECURITYADMAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS bindauth, \
+                CASE d.SQLADMAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS sqladm, \
+                CASE d.WLMADMAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS wlmadm, \
+                CASE d.EXPLAINAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS explain, \
+                CASE d.DATAACCESSAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS dataaccess, \
+                CASE d.ACCESSCTRLAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS accessctrl, \
+                CASE d.CREATESECUREAUTH WHEN 'Y' THEN 'Y' ELSE NULL END AS createsecure \
+                FROM SYSIBMADM.AUTHORIZATIONIDS a LEFT JOIN SYSCAT.DBAUTH d ON a.AUTHID = d.GRANTEE \
+                $where \
+                ORDER BY a.AUTHID \
+                FOR READ only"
+              bash -c "$db2_path/bin/db2 connect to {{ database | first }}; $db2_path/bin/db2 \"$query\";"
+              exit 0
+            args:
+              chdir: /tmp
+            become_user: "{{ db_user }}"
+            register: res
+
+          - name: Display {{ type | title }} Permissions
+            debug:
+              msg: "{{ res.stdout_lines }}"
+        when: local_dbs | intersect(database)

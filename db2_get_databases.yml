@@ -1,0 +1,61 @@
+---
+  - name: Check for DB2 on system
+    import_playbook: "{{ playbook_dir }}/db2_get_instance.yml"
+
+  - name: DB2 Get Databases
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+
+    tasks: 
+      - name: Setting instance name
+        set_fact:
+          db_user: "{{ db2_instance.stdout_lines | first }}"
+
+      - name: Check Available Databases
+        shell: |
+          db2_path=~/sqllib
+          source $db2_path/db2profile
+          dbs=($($db2_path/bin/db2 "list db directory" | grep Indirect -B4 | grep name | awk '{print $NF}'))
+          hostnames=($(for i in $(hostname -I); do nslookup $i | awk 'NF {print $NF}' | awk -F'.' '{print $1}'; done))
+
+          for db in "${dbs[@]}"; do
+            primary=$(db2pd -db $db -hadr | grep -i PRIMARY_MEMBER_HOST | awk '{print $NF}' | uniq)
+            if [ -z $primary ]; then 
+              echo "$db"
+            elif [[ " ${hostnames[*]} " =~ [[:space:]]${primary}[[:space:]] ]]; then
+              echo $db
+            fi
+          done;
+          
+          exit 0
+        args:
+          chdir: /tmp
+        become_user: "{{ db_user }}"
+        register: catalog
+      
+      - name: Setting list of local databases
+        set_fact:
+          local_dbs: "{{ catalog.stdout_lines }}"
+
+      - name: Display connectable DB2 databases by host
+        debug:
+          ### Output information as a single line per host
+          # msg: 
+          #   "{{ 
+          #       ['Host: '] | product(ansible_play_hosts_all) | map('join') 
+          #       | zip([' | Instance: '] | product(ansible_play_hosts_all | map('extract', hostvars, 'db_user')) | map('join')) | map('join') 
+          #       | zip([' | Databases: '] | product(ansible_play_hosts_all | map('extract', hostvars, 'local_dbs') | map('join', ', ') ) | map('join')) 
+          #       | map('join') 
+          #     }}"
+          ### Default
+          msg: 
+            "{{ ['Host: '] | product(ansible_play_hosts_all) | map('join')
+                | zip(['Instance: '] | product(ansible_play_hosts_all | map('extract', hostvars, 'db_user')) | map('join'))
+                | zip(['Databases: '] | product(ansible_play_hosts_all | map('extract', hostvars, 'local_dbs') | map('join', ', ') ) | map('join')) 
+                | product([' '])
+                | flatten }}"
+        delegate_to: localhost
+        run_once: true
+        when: local_dbs

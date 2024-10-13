@@ -1,0 +1,64 @@
+---
+  - name: De-activate DB2 database
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+    vars:
+      database: ["{{ DATABASE }}"]
+
+    tasks: 
+      - name: Get DB2 installation directory
+        import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+
+      - name: Get DB2 instance
+        command: "{{ db2_installation_directory }}/instance/db2ilist"
+        register: instances
+
+      - name: Get DB2 databases
+        shell: |
+          db2_path=~/sqllib
+          source $db2_path/db2profile
+          dbs=($($db2_path/bin/db2 "list db directory" | grep Indirect -B4 | grep name | awk '{print $NF}'))
+          hostnames=($(for i in $(hostname -I); do nslookup $i | awk 'NF {print $NF}' | awk -F'.' '{print $1}'; done))
+
+          for db in "${dbs[@]}"; do
+            primary=$(db2pd -db $db -hadr | grep -i PRIMARY_MEMBER_HOST | awk '{print $NF}' | uniq)
+            if [ -z $primary ]; then 
+              echo "$db"
+            elif [[ " ${hostnames[*]} " =~ [[:space:]]${primary}[[:space:]] ]]; then
+              echo $db
+            fi
+          done;
+          
+          exit 0
+        register: local_dbs
+        become_user: "{{ instances.stdout }}"
+
+      - name: Display database to activate
+        debug:
+          var: database
+
+      - name: End Play if database is not in list of DB2 databases
+        meta: end_play
+        when: 
+          - database is undefined or ansible_play_hosts_all | map('extract', hostvars, 'local_dbs') | flatten | intersect(database) | length != 1
+
+      - name: For each local database, deactivate the database 
+        block:
+          - name: De-activate Database
+            shell: |
+              db2_path=~/sqllib
+              source $db2_path/db2profile
+              db2 deactivate database {{ database }};
+              db2 terminate;
+              exit 0
+            args:
+              chdir: /tmp
+            become_user: "{{ db_user }}"
+            register: res
+
+          - name: Display database de-activation. 
+            debug:
+              msg: "{{ res.stdout_lines }}"
+        when: local_dbs | intersect(database)

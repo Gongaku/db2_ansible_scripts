@@ -1,0 +1,38 @@
+---
+  - name: Check for DB2 on system
+    import_playbook: "{{ playbook_dir }}/db2_get_databases.yml"
+
+  - name: Db2 check running utilities
+    hosts: all
+    become: yes
+    gather_facts: true
+    strategy: linear
+    vars:
+      database: ["{{ DATABASE }}"]
+
+    tasks:
+      - name: End Play if database is not in list of DB2 databases
+        meta: end_play
+        when: local_dbs | intersect(database) | length < 1
+
+      - block:
+        - name: Check running utilities
+          shell: |
+            db2_path=~/sqllib
+            source $db2_path/db2profile
+            db2 connect to {{ database | first }} &>/dev/null
+            db2 "list utilities"
+
+            if [ $? -ne 0 ]; then
+              printf "\nNo DB2 utilities are currently running\n";
+              exit 0
+            fi;
+          register: output
+          ignore_errors: true
+
+        - name: Display Utilities
+          debug:
+            msg: "{{ output.stdout_lines }}"
+        become_user: "{{ db_user }}"
+        when: local_dbs | intersect(database)
+        

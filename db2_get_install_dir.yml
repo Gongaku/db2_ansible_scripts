@@ -1,0 +1,12 @@
+- name: Getting installation directory
+  ansible.builtin.shell: |
+    /usr/local/bin/db2ls | tail -n 1 | awk '{print $1}'
+  register: version
+
+- name: Getting latest Db2 version installed
+  set_fact:
+    db2_installation_directory: "{{ version.stdout }}"
+
+- name: End play if no DB2 installation was found on host
+  meta: end_play
+  when: not db2_installation_directory

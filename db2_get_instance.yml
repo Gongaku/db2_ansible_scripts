@@ -1,0 +1,37 @@
+---
+  - name: Get local DB2 instance(s)
+    hosts: all
+    become: yes
+    gather_facts: false
+    strategy: linear
+
+    tasks:
+      - name: Pull installation directory tasks
+        import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+
+      - name: Pull DB2 instances
+        shell: |
+          {{ db2_installation_directory }}/bin/db2greg -dump | gawk -F, '$1=="I" && $2=="DB2" {print $4}'
+          exit 0
+        args:
+          chdir: /tmp
+        register: db2_instance
+
+      - name: Display DB2 instances by host
+        debug:
+          ### Output information as a single line per host
+          # msg: 
+          #   "{{ ['Host: '] | product(ansible_play_hosts_all) | map('join') | zip( [' | Instance: '] | product(ansible_play_hosts_all | map('extract', hostvars, ['db2_instance', 'stdout_lines']) | map('join', ', ')) | map('join')) | map('join') }}"
+          ### Default
+          msg: 
+            "{{ 
+                ['Host: '] | product(ansible_play_hosts_all) | map('join') 
+                | zip(['Instances: '] | product(ansible_play_hosts_all | map('extract', hostvars, ['db2_instance', 'stdout_lines']) | map('join', ', ')) | map('join')) 
+                | product([' '])
+                | flatten
+             }}"
+          
+        delegate_to: localhost
+        run_once: true
+        when: db2_instance.stdout
+        

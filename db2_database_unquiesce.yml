@@ -1,0 +1,39 @@
+---
+  - name: Check for DB2 on system
+    import_playbook: "{{ playbook_dir }}/db2_get_databases.yml"
+    no_log: true
+
+  - name: Quiesce Database
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+    vars:
+      database: ["{{ DATABASE }}"]
+
+    tasks: 
+      - name: End Play if database is not in list of DB2 databases
+        meta: end_play
+        delegate_to: localhost
+        run_once: true
+        when: 
+          - database is undefined or ansible_play_hosts_all | map('extract', hostvars, 'local_dbs') | flatten | intersect(database) | length != 1
+
+      - block:
+          - name: Execute Database Unquiesce
+            shell: |
+              db2_path=~/sqllib
+              source $db2_path/db2profile
+              db2=$db2_path/bin/db2
+
+              bash -c "$db2 connect to {{ database | first }}; $db2 unquiesce database;" 
+              exit 0
+            args:
+              chdir: /tmp
+            become_user: "{{ db_user }}"
+            register: res
+
+          - name: Display quiesce results
+            debug:
+              msg: "{{ res.stdout_lines }}"
+        when: local_dbs | intersect(database)

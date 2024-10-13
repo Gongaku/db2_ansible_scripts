@@ -1,0 +1,199 @@
+---
+  - name: Install Db2 on remote host
+    hosts: all
+    become: true
+    gather_facts: true
+    vars:
+      required_packages: [
+        'binutils.x86_64', 
+        'gcc.x86_64', 
+        'net-tools.x86_64', 
+        'file.x86_64', 
+        'libgomp.x86_64', 
+        'sg3_utils.x86_64', 
+        'ksh.x86_64', 
+        'pam.x86_64', 
+        'pam.i686', 
+        'patch.x86_64', 
+        'make.x86_64', 
+        'perl.x86_64', 
+        'mksh.x86_64', 
+        'psmisc.x86_64', 
+        'm4.x86_64', 
+        'kernel-headers.x86_64', 
+        'expect.x86_64', 
+        'java'
+      ]
+      temp_directory: "/tmp/db2temp"
+      repository: "<download url>"
+
+    tasks:
+      - name: Checking for DB2 installation directory 
+        ansible.builtin.shell: |
+          /usr/local/bin/db2ls | tail -n 1 | awk '{print $1}'
+        register: version
+
+      - name: End play if DB2 is already installed
+        meta: end_play
+        when: version.stderr_lines | length == 0
+      
+      - name: Check repository for latest DB2 archive file
+        ansible.builtin.shell: |
+          curl -s {{ repository }}/ | grep -oP '(?<=href=\")v.+?(?=\")'
+        register: db2_archive
+
+      - name: Setting facts
+        set_fact:
+          db2_archive: "{{ db2_archive.stdout }}"
+          db2_version: "{{ db2_archive.stdout[1:7]+'.0' }}"
+          db2_installation_directory: "/opt/ibm/db2/V{{ db2_archive.stdout[1:5] }}"
+          unarchived_directory: "{{ temp_directory}}/{{ db2_archive.stdout.split('_')[2] }}"
+
+      - name: Transport DB2 tar file and unarchive
+        block:
+          
+          - name: Create temporary execution directory on remote host
+            ansible.builtin.file:
+              path: "{{ temp_directory }}"
+              state: directory
+              mode: '0777'
+
+          - name: Copy DB2 archive file to target 
+            ansible.builtin.get_url:
+              url: "{{ repository }}/{{ db2_archive }}"
+              dest: "{{ temp_directory }}/{{ db2_archive }}"
+            become: yes
+
+          - name: Unarchive DB2 archive file on target and then delete archive file
+            ansible.builtin.unarchive:
+              src: "{{ temp_directory }}/{{ db2_archive }}"
+              dest: "{{ temp_directory }}"
+              remote_src: yes 
+              creates: "{{ unarchived_directory }}"
+
+      - name: Install required yum packages
+        block: 
+          - name: Get installed packages
+            command: rpm -qa --qf "%{NAME}.%{ARCH}\n"
+            register: installed_packages
+
+          - name: Install required yum packages for all RHEL releases
+            ansible.builtin.yum:
+              name: "{{ item }}"
+              state: present
+            with_items: 
+              - "{{ required_packages | difference(installed_packages.stdout_lines) }}"
+
+          - name: Install required RHEL 7 yum packages
+            ansible.builtin.yum:
+              name:
+                - perl-Sys-Syslog
+                - python3
+              state: present
+            when: ansible_distribution_major_version == "7"
+
+          - name: Install required RHEL 8 yum packages
+            ansible.builtin.yum:
+              name:
+                - perl-Net-Ping
+                - sendEmail
+                - python36
+              state: present
+            when: ansible_distribution_major_version == "8"
+
+      - name: Create DB2 Users and Groups
+        block:
+          - name: Pull existing groups
+            ansible.builtin.getent:
+              database: group
+
+          - name: Pull existing users
+            ansible.builtin.getent:
+              database: passwd
+          
+          - name: Create db2iadm1 group if not exist
+            ansible.builtin.group:
+              name: db2iadm1
+            when: "'db2iadm1' not in ansible_facts.getent_group"
+
+          - name: Create db2fadm1 group if not exist
+            ansible.builtin.group:
+              name: db2iadm1
+            when: "'db2fadm1' not in ansible_facts.getent_group"
+
+          - name: Create db2insta user if not exist
+            ansible.builtin.user:
+              name: db2insta
+              comment: DB2 Instance Owner
+              shell: /bin/bash
+              group: db2iadm1
+            when: "'db2insta' not in ansible_facts.getent_passwd"
+
+          - name: Create db2fenc1 user if not exist
+            ansible.builtin.user:
+              name: db2fenc1
+              comment: DB2 Fenced User
+              shell: /bin/bash
+              group: db2fadm1
+            when: "'db2fenc1' not in ansible_facts.getent_passwd"
+
+      - name: Perform DB2 prerequisite check
+        ansible.builtin.command: '{{ unarchived_directory }}/db2prereqcheck -v {{ db2_version }} -i -s'
+        register: prereqs
+
+      - name: Display DB2 prerequisite results
+        debug:
+          msg: "{{ prereqs.stderr_lines }}" 
+
+      - name: End play if prerequisites are not met
+        meta: end_play
+        when: prereqs.stderr_lines | length > 1
+
+      - name: Install DB2
+        ansible.builtin.command: '{{ unarchived_directory }}/db2_install -p SERVER -b {{ db2_installation_directory }} -n -y'
+        register: installation
+
+      - name: Display DB2 installation warnings
+        debug:
+          msg: "{{ installation.stderr_lines }}"
+        when: installation.stderr_lines | length > 0
+
+      - name: Display DB2 installation results
+        debug:
+          msg: "{{ installation.stdout_lines }}"
+          
+      - name: Check if fix pack script in archive
+        find:
+          path: "{{ unarchived_directory }}/"
+          pattern: "*Fix*"
+        register: fix_script
+
+      - name: Execute FixPack script
+        block:
+          - name: Parse FixPack installation path
+            set_fact:
+              fix_script_path: "{{ fix_script.files | json_query('[].path') | first }}"
+
+          - name: Install DB2 Fix Pack
+            ansible.builtin.shell: |
+              {{ fix_script_path }} -b {{ db2_installation_directory }} -n -y
+              exit 0
+            register: installation
+
+          - name: Display DB2 Fix Pack warnings
+            debug:
+              msg: "{{ installation.stderr_lines }}"
+            when: installation.stderr_lines | length > 0
+
+          - name: Display DB2 Fix Pack results
+            debug:
+              msg: "{{ installation.stdout_lines }}"
+        when: fix_script.files | json_query('[].path') | length > 0
+
+      - name: Clean up temporary execution directory
+        ansible.builtin.file:
+          path: "{{ temp_directory }}"
+          state: absent
+      
+      - debug:
+          msg: "DB2 Installation completed successfully."

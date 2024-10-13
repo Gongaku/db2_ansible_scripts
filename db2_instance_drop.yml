@@ -1,0 +1,34 @@
+---
+  - name: Drop Db2 Instance on remote host
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+
+    tasks:
+      - name: Pull installation directory tasks
+        import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+      
+      - block:
+          - name: Get DB2 instance, if none were specified
+            command: '{{ db2_installation_directory }}/instance/db2ilist'
+            register: instances
+
+          - name: Setting DB2 instance
+            set_fact:
+              db2_instance: "{{ instances.stdout }}"
+        when: 
+          - db2_instance is undefined or not db2_instance or db2_instance is mapping
+
+      - name: End play if no DB2 Instance exists
+        meta: end_play
+        when: db2_instance | length == 0
+
+      - name: Perform DB2 Database Instance Drop
+        command: |
+          {{ db2_installation_directory }}/instance/db2idrop {{ db2_instance }}
+        register: dropped
+
+      - name: Display DB2 instance drop results
+        debug:
+          msg: "{{ dropped.stdout_lines }}"

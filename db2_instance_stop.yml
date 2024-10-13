@@ -1,0 +1,43 @@
+---
+  - name: Stop Db2 Instance on remote host
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+
+    tasks:
+      - name: Pull installation directory tasks
+        import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+
+      - name: Pull DB2 instances
+        shell: |
+          {{ db2_installation_directory }}/bin/db2greg -dump | gawk -F, '$1=="I" && $2=="DB2" {print $4}'
+        args:
+          chdir: /tmp
+        register: db2_instance
+
+      - name: Check DB2 Database Manager status
+        shell: |
+          pgrep -l db2sysc
+          exit 0
+        register: dbm_state
+
+      - name: End play if DB2 database manager not running
+        meta: end_play
+        when: dbm_state.stdout_lines | length == 0
+
+      - name: Stop DB2 Database Manager
+        shell: |
+          db2_path=~/sqllib
+          source $db2_path/db2profile
+          
+          $db2_path/adm/db2stop force
+          $db2_path/bin/db2 terminate
+        become_user: "{{ db2_instance.stdout }}"
+        register: stop
+
+      - name: Display execution results
+        debug:
+          msg: "{{ stop.stdout_lines }}"
+
+      

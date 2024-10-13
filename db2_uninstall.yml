@@ -1,0 +1,24 @@
+---
+  - name: Stop DB2 Instance
+    import_playbook: "{{ playbook_dir }}/db2_instance_stop.yml"
+
+  - name: Drop DB2 Instance
+    import_playbook: "{{ playbook_dir }}/db2_instance_drop.yml"
+  
+  - name: Uninstall Db2 on remote host
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+
+    tasks:
+      - name: Pull installation directory tasks
+        import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+
+      - name: Uninstall all DB2 database products on remote host
+        command: '{{ db2_installation_directory }}/install/db2_deinstall -a'
+        register: uninstall_state
+
+      - name: Display DB2 removal results
+        debug:
+          msg: "{{ uninstall_state.stdout_lines }}"

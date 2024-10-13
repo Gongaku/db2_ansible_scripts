@@ -1,0 +1,35 @@
+---
+  - name: Create Db2 Instance on remote host
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+
+    tasks:
+      - name: Pull installation directory tasks
+        import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+
+      - name: Pull DB2 instances
+        shell: |
+          {{ db2_installation_directory }}/bin/db2greg -dump | gawk -F, '$1=="I" && $2=="DB2" {print $4}'
+        args:
+          chdir: /tmp
+        register: current_instance
+
+      - name: End play if DB2 Instance exists
+        meta: end_play
+        when: current_instance.stdout | length > 0
+
+      - name: Setting DB2 instance
+        set_fact:
+          db2_instance: "db2insta"
+          fenced_user: "db2fenc1"
+        when: db2_instance is undefined or db2_instance | length == 0
+
+      - name: Create DB2 Database Instance
+        command: '{{ db2_installation_directory }}/instance/db2icrt -a SERVER -u {{ fenced_user }} {{ db2_instance }}'
+        register: create
+
+      - name: Display DB2 instance create results
+        debug:
+          msg: "{{ create.stdout_lines }}"

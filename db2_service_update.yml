@@ -1,0 +1,39 @@
+---
+  - name: Update DB2 TCP/IP Service
+    hosts: all
+    become: true
+    gather_facts: false
+    strategy: linear
+
+    tasks:
+      - import_tasks: "{{ playbook_dir }}/db2_get_install_dir.yml"
+
+      - name: Get instance
+        command: "{{ db2_installation_directory }}/instance/db2ilist"
+        register: instances
+
+      - name: Update DB2 TCP/IP service to use port 50000
+        ansible.builtin.lineinfile:
+          path: /etc/services
+          search_string: 'db2c_{{ instances.stdout }}'
+          line: "db2c_{{ instances.stdout }}\t50000/tcp\t\t# IBM TCP/IP Port"
+          state: present
+
+      - name: Check defined services
+        ansible.builtin.service_facts:
+
+      - name: Get firewalld status
+        set_fact:
+          firewall_state: "{{ ansible_facts | json_query('services.* | [?name == `firewalld.service`].state') }}"
+      
+      - block: 
+          - name: Open needed firewall ports
+            shell:
+              firewall-cmd --add-port=50000/tcp --permanent
+          
+          - name: Reload firewall daemon
+            shell:
+              firewall-cmd --reload
+        when: 
+          - firewall_state is defined
+          - firewall_state | first == "running"
